@@ -40,7 +40,7 @@ const App = (function() {
   // Initialize app
   async function init() {
     setupEventListeners();
-    
+
     if (API.isLoggedIn()) {
       try {
         const { user } = await API.getMe();
@@ -113,12 +113,12 @@ const App = (function() {
     e.preventDefault();
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
-    
+
     elements.loginError.textContent = '';
 
     try {
       const { user } = await API.login(username, password);
-      
+
       // Load private key from IndexedDB
       const storedKey = await CryptoModule.getStoredPrivateKey(user.id);
       if (!storedKey) {
@@ -126,7 +126,7 @@ const App = (function() {
         API.logout();
         return;
       }
-      
+
       privateKey = await CryptoModule.importPrivateKey(storedKey);
       currentUser = user;
       showChatView();
@@ -153,14 +153,14 @@ const App = (function() {
       // Generate key pair
       const keyPair = await CryptoModule.generateKeyPair();
       const publicKeyBase64 = await CryptoModule.exportPublicKey(keyPair.publicKey);
-      
+
       // Register user
       const { user } = await API.register(username, password, publicKeyBase64);
-      
+
       // Store private key
       const privateKeyJWK = await CryptoModule.exportPrivateKey(keyPair.privateKey);
       await CryptoModule.storeKeyPair(user.id, privateKeyJWK);
-      
+
       privateKey = keyPair.privateKey;
       currentUser = user;
       showChatView();
@@ -188,7 +188,7 @@ const App = (function() {
   // Load user session
   async function loadUserSession(user) {
     currentUser = user;
-    
+
     // Load private key
     const storedKey = await CryptoModule.getStoredPrivateKey(user.id);
     if (!storedKey) {
@@ -197,7 +197,7 @@ const App = (function() {
       showAuthView();
       return;
     }
-    
+
     privateKey = await CryptoModule.importPrivateKey(storedKey);
     showChatView();
   }
@@ -216,14 +216,14 @@ const App = (function() {
   async function showChatView() {
     elements.authView.classList.add('hidden');
     elements.chatView.classList.remove('hidden');
-    
+
     // Set user info
     elements.currentUsername.textContent = currentUser.username;
     elements.currentUserAvatar.textContent = currentUser.username.charAt(0);
-    
+
     // Load conversations
     await loadConversations();
-    
+
     // Connect to SSE
     connectSSE();
   }
@@ -257,7 +257,7 @@ const App = (function() {
     elements.conversationsList.innerHTML = conversations.map(conv => {
       const otherUser = conv.participants.find(p => p.id !== currentUser.id);
       const isActive = currentConversation && currentConversation.id === conv.id;
-      
+
       return `
         <div class="conversation-item ${isActive ? 'active' : ''}" data-id="${conv.id}" data-user-id="${otherUser?.id}">
           <div class="avatar">${otherUser?.username?.charAt(0) || '?'}</div>
@@ -283,9 +283,9 @@ const App = (function() {
   // Handle user search
   function handleUserSearch(e) {
     const query = e.target.value.trim();
-    
+
     clearTimeout(searchTimeout);
-    
+
     if (!query) {
       elements.searchResults.classList.add('hidden');
       return;
@@ -322,7 +322,7 @@ const App = (function() {
         });
       });
     }
-    
+
     elements.searchResults.classList.remove('hidden');
   }
 
@@ -330,11 +330,11 @@ const App = (function() {
   async function startConversation(userId) {
     try {
       const { conversation } = await API.createConversation(userId);
-      
+
       if (!conversation.existing) {
         await loadConversations();
       }
-      
+
       openConversation(conversation.id, userId);
     } catch (e) {
       showToast('Failed to start conversation', 'error');
@@ -348,26 +348,26 @@ const App = (function() {
       const { user } = await API.getUser(userId);
       currentChatUser = user;
       currentConversation = conversations.find(c => c.id === conversationId) || { id: conversationId };
-      
+
       // Update UI
       elements.chatUsername.textContent = user.username;
       elements.chatUserAvatar.textContent = user.username.charAt(0);
-      
+
       // Show chat container
       showNoChatSelected(false);
       elements.chatContainer.classList.remove('hidden');
-      
+
       // Hide sidebar on mobile
       elements.sidebar.classList.add('hidden-mobile');
-      
+
       // Mark conversation as active
       elements.conversationsList.querySelectorAll('.conversation-item').forEach(item => {
         item.classList.toggle('active', item.dataset.id === conversationId);
       });
-      
+
       // Load messages
       await loadMessages(conversationId);
-      
+
       // Focus input
       elements.messageInput.focus();
     } catch (e) {
@@ -385,7 +385,7 @@ const App = (function() {
     }
   }
 
-  // Render messages
+  // Render messages (FIXED: sent messages use local cache)
   async function renderMessages(messages) {
     if (messages.length === 0) {
       elements.messagesList.innerHTML = `
@@ -399,18 +399,30 @@ const App = (function() {
     const messageElements = await Promise.all(messages.map(async (msg) => {
       const isSent = msg.sender_id === currentUser.id;
       let content = 'Unable to decrypt';
-      
-      try {
-        content = await CryptoModule.decryptWithPrivateKey(
-          msg.encrypted_content,
-          msg.encrypted_key,
-          msg.iv,
-          privateKey
-        );
-      } catch (e) {
-        console.error('Decrypt error:', e);
+
+      if (isSent) {
+        // Retrieve locally stored plaintext (you wrote the message)
+        try {
+          const cached = await CryptoModule.getSentPlaintext(msg.id);
+          content = cached || 'You sent an encrypted message';
+        } catch (e) {
+          content = 'You sent an encrypted message';
+        }
+      } else {
+        // Received message – decrypt with your own private key
+        try {
+          content = await CryptoModule.decryptWithPrivateKey(
+            msg.encrypted_content,
+            msg.encrypted_key,
+            msg.iv,
+            privateKey
+          );
+        } catch (e) {
+          console.error('Decrypt error (received):', e);
+          content = 'Unable to decrypt';
+        }
       }
-      
+
       return `
         <div class="message ${isSent ? 'sent' : 'received'}">
           <div class="message-content">${escapeHtml(content)}</div>
@@ -423,10 +435,10 @@ const App = (function() {
     scrollToBottom();
   }
 
-  // Handle send message - FIXED VERSION
+  // Handle send message (FIXED: stores sent message plaintext locally)
   async function handleSendMessage(e) {
     e.preventDefault();
-    
+
     const message = elements.messageInput.value.trim();
     if (!message || !currentConversation || !currentChatUser) return;
 
@@ -439,33 +451,36 @@ const App = (function() {
         currentChatUser.public_key
       );
 
-      // Send to server
-      await API.sendMessage(
+      // Send to server – IMPORTANT: API.sendMessage must return the created message object
+      const { message: sentMessage } = await API.sendMessage(
         currentConversation.id,
         encryptedForRecipient.encryptedContent,
         encryptedForRecipient.encryptedKey,
         encryptedForRecipient.iv
       );
 
-      // Add message to UI immediately (you can show unencrypted since you know what you sent)
+      // Cache the plaintext locally so we can display it later without decryption
+      await CryptoModule.storeSentPlaintext(sentMessage.id, message);
+
+      // Add message to UI immediately (we already know the plaintext)
       const messageHtml = `
         <div class="message sent">
           <div class="message-content">${escapeHtml(message)}</div>
           <div class="message-time">${formatTime(new Date().toISOString())}</div>
         </div>
       `;
-      
+
       // Remove empty state if present
       const emptyState = elements.messagesList.querySelector('.message-encrypted');
       if (emptyState && emptyState.textContent.includes('end-to-end encrypted')) {
         emptyState.remove();
       }
-      
+
       elements.messagesList.insertAdjacentHTML('beforeend', messageHtml);
       scrollToBottom();
     } catch (e) {
       showToast('Failed to send message', 'error');
-      elements.messageInput.value = message;
+      elements.messageInput.value = message; // restore input on failure
     }
   }
 
@@ -481,7 +496,7 @@ const App = (function() {
     eventSource.onmessage = async (event) => {
       try {
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'new_message') {
           handleNewMessage(data.message);
         }
@@ -507,26 +522,37 @@ const App = (function() {
 
     // If currently viewing this conversation, add the message
     if (currentConversation && currentConversation.id === message.conversation_id) {
-      try {
-        const content = await CryptoModule.decryptWithPrivateKey(
-          message.encrypted_content,
-          message.encrypted_key,
-          message.iv,
-          privateKey
-        );
+      // Only received messages arrive via SSE; sent ones are handled locally.
+      // But just in case, we check who the sender is.
+      const isSent = message.sender_id === currentUser.id;
+      let content = 'Unable to decrypt';
 
-        const messageHtml = `
-          <div class="message received">
-            <div class="message-content">${escapeHtml(content)}</div>
-            <div class="message-time">${formatTime(message.created_at)}</div>
-          </div>
-        `;
-        
-        elements.messagesList.insertAdjacentHTML('beforeend', messageHtml);
-        scrollToBottom();
-      } catch (e) {
-        console.error('Decrypt error:', e);
+      if (isSent) {
+        const cached = await CryptoModule.getSentPlaintext(message.id);
+        content = cached || 'You sent an encrypted message';
+      } else {
+        try {
+          content = await CryptoModule.decryptWithPrivateKey(
+            message.encrypted_content,
+            message.encrypted_key,
+            message.iv,
+            privateKey
+          );
+        } catch (e) {
+          console.error('Decrypt error (SSE):', e);
+          content = 'Unable to decrypt';
+        }
       }
+
+      const messageHtml = `
+        <div class="message ${isSent ? 'sent' : 'received'}">
+          <div class="message-content">${escapeHtml(content)}</div>
+          <div class="message-time">${formatTime(message.created_at)}</div>
+        </div>
+      `;
+
+      elements.messagesList.insertAdjacentHTML('beforeend', messageHtml);
+      scrollToBottom();
     }
   }
 
@@ -559,7 +585,7 @@ const App = (function() {
     const date = new Date(dateString);
     const now = new Date();
     const diff = now - date;
-    
+
     if (diff < 60000) return 'now';
     if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
     if (diff < 86400000) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
