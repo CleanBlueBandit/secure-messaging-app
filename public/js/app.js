@@ -485,35 +485,66 @@ const App = (function() {
   }
 
   // Connect to SSE for real-time updates
-  function connectSSE() {
-    if (eventSource) {
-      eventSource.close();
-    }
-
-    const token = API.getToken();
-    eventSource = new EventSource(`/api/events?token=${token}`);
-
-    eventSource.onmessage = async (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        if (data.type === 'new_message') {
-          handleNewMessage(data.message);
-        }
-      } catch (e) {
-        console.error('SSE error:', e);
-      }
-    };
-
-    eventSource.onerror = () => {
-      // Reconnect after a delay
-      setTimeout(() => {
-        if (API.isLoggedIn()) {
-          connectSSE();
-        }
-      }, 5000);
-    };
+  // Connect to SSE for real-time updates
+function connectSSE() {
+  if (eventSource) {
+    eventSource.close();
   }
+
+  const token = API.getToken();
+  if (!token) {
+    console.error('No token available for SSE connection');
+    return;
+  }
+
+  console.log('🔌 Connecting SSE with token:', token.substring(0, 20) + '...');
+  eventSource = new EventSource(`/api/events?token=${token}`);
+
+  eventSource.onopen = () => {
+    console.log('SSE connection opened successfully');
+  };
+
+  eventSource.onmessage = async (event) => {
+    console.log('📩 SSE raw event received:', event.data);
+    try {
+      const data = JSON.parse(event.data);
+      console.log('📦 Parsed SSE data:', data);
+      
+      if (data.type === 'new_message') {
+        console.log('New message event detected:', {
+          messageId: data.message?.id,
+          conversationId: data.message?.conversation_id,
+          senderId: data.message?.sender_id,
+          currentUserId: currentUser?.id
+        });
+        await handleNewMessage(data.message);
+      } else {
+        console.log('ℹ️ Unknown SSE event type:', data.type);
+      }
+    } catch (e) {
+      console.error('SSE parsing error:', e);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    console.error('SSE error occurred:', {
+      readyState: eventSource.readyState,
+      message: err.message || 'Unknown error'
+    });
+    
+    // Log readyState meaning
+    const states = ['CONNECTING', 'OPEN', 'CLOSED'];
+    console.log(`SSE state: ${states[eventSource.readyState] || 'UNKNOWN'}`);
+    
+    // Reconnect after a delay
+    setTimeout(() => {
+      if (API.isLoggedIn()) {
+        console.log('Attempting SSE reconnection...');
+        connectSSE();
+      }
+    }, 5000);
+  };
+}
 
   // Handle new message from SSE
   async function handleNewMessage(message) {
