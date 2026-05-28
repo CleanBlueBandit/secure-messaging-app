@@ -132,10 +132,11 @@ const CryptoModule = (function() {
   // Encrypt AES key with recipient's public key
   async function encryptAESKey(aesKey, recipientPublicKey) {
     const exportedAESKey = await window.crypto.subtle.exportKey('raw', aesKey);
-    
+
     const encrypted = await window.crypto.subtle.encrypt(
       {
-        name: 'RSA-OAEP'
+        name: 'RSA-OAEP',
+        hash: 'SHA-256'
       },
       recipientPublicKey,
       exportedAESKey
@@ -146,26 +147,36 @@ const CryptoModule = (function() {
 
   // Decrypt AES key with own private key
   async function decryptAESKey(encryptedKey, privateKey) {
-    const encryptedData = base64ToArrayBuffer(encryptedKey);
-    
-    const decrypted = await window.crypto.subtle.decrypt(
-      {
-        name: 'RSA-OAEP'
-      },
-      privateKey,
-      encryptedData
-    );
+    try {
+      const encryptedData = base64ToArrayBuffer(encryptedKey);
 
-    return await window.crypto.subtle.importKey(
-      'raw',
-      decrypted,
-      {
-        name: 'AES-GCM',
-        length: 256
-      },
-      false,
-      ['decrypt']
-    );
+      const decrypted = await window.crypto.subtle.decrypt(
+        {
+          name: 'RSA-OAEP'
+        },
+        privateKey,
+        encryptedData
+      );
+
+      return await window.crypto.subtle.importKey(
+        'raw',
+        decrypted,
+        {
+          name: 'AES-GCM',
+          length: 256
+        },
+        false,
+        ['decrypt']
+      );
+    } catch (error) {
+      console.error('decryptAESKey error details:', {
+        errorMessage: error.message,
+        errorName: error.name,
+        keyType: privateKey?.type,
+        keyAlgorithm: privateKey?.algorithm?.name
+      });
+      throw new Error(`Failed to decrypt AES key: ${error.message}`);
+    }
   }
 
   // Store key pair in IndexedDB
