@@ -152,7 +152,8 @@ const CryptoModule = (function() {
 
       const decrypted = await window.crypto.subtle.decrypt(
         {
-          name: 'RSA-OAEP'
+          name: 'RSA-OAEP',
+          hash: 'SHA-256'
         },
         privateKey,
         encryptedData
