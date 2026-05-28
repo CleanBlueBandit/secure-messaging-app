@@ -9,6 +9,8 @@ const App = (function() {
   let currentChatUser = null;
   let eventSource = null;
   let searchTimeout = null;
+  let sseHeartbeatTimeout = null;
+  const SSE_HEARTBEAT_INTERVAL = 40000;
 
   // DOM Elements
   const elements = {
@@ -37,7 +39,6 @@ const App = (function() {
     toastContainer: document.getElementById('toast-container')
   };
 
-  // Initialize app
   async function init() {
     setupEventListeners();
 
@@ -52,25 +53,23 @@ const App = (function() {
     } else {
       showAuthView();
     }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && API.isLoggedIn() && currentUser) {
+        connectSSE();
+      }
+    });
   }
 
-  // Setup event listeners
   function setupEventListeners() {
-    // Auth tabs
     elements.tabBtns.forEach(btn => {
       btn.addEventListener('click', () => switchAuthTab(btn.dataset.tab));
     });
 
-    // Login form
     elements.loginForm.addEventListener('submit', handleLogin);
-
-    // Register form
     elements.registerForm.addEventListener('submit', handleRegister);
-
-    // Logout
     elements.logoutBtn.addEventListener('click', handleLogout);
 
-    // User search
     elements.userSearch.addEventListener('input', handleUserSearch);
     elements.userSearch.addEventListener('focus', () => {
       if (elements.userSearch.value.trim()) {
@@ -78,17 +77,14 @@ const App = (function() {
       }
     });
 
-    // Close search results on click outside
     document.addEventListener('click', (e) => {
       if (!elements.userSearch.contains(e.target) && !elements.searchResults.contains(e.target)) {
         elements.searchResults.classList.add('hidden');
       }
     });
 
-    // Message form
     elements.messageForm.addEventListener('submit', handleSendMessage);
 
-    // Back button (mobile)
     elements.backBtn.addEventListener('click', () => {
       elements.sidebar.classList.remove('hidden-mobile');
       currentConversation = null;
@@ -97,7 +93,6 @@ const App = (function() {
     });
   }
 
-  // Switch auth tab
   function switchAuthTab(tab) {
     elements.tabBtns.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tab);
@@ -108,7 +103,6 @@ const App = (function() {
     elements.registerError.textContent = '';
   }
 
-  // Handle login
   async function handleLogin(e) {
     e.preventDefault();
     const username = document.getElementById('login-username').value.trim();
@@ -119,7 +113,6 @@ const App = (function() {
     try {
       const { user } = await API.login(username, password);
 
-      // Load private key from IndexedDB
       const storedKey = await CryptoModule.getStoredPrivateKey(user.id);
       if (!storedKey) {
         elements.loginError.textContent = 'Encryption keys not found. Please register again on this device.';
@@ -135,7 +128,6 @@ const App = (function() {
     }
   }
 
-  // Handle register
   async function handleRegister(e) {
     e.preventDefault();
     const username = document.getElementById('register-username').value.trim();
@@ -150,14 +142,11 @@ const App = (function() {
     }
 
     try {
-      // Generate key pair
       const keyPair = await CryptoModule.generateKeyPair();
       const publicKeyBase64 = await CryptoModule.exportPublicKey(keyPair.publicKey);
 
-      // Register user
       const { user } = await API.register(username, password, publicKeyBase64);
 
-      // Store private key
       const privateKeyJWK = await CryptoModule.exportPrivateKey(keyPair.privateKey);
       await CryptoModule.storeKeyPair(user.id, privateKeyJWK);
 
@@ -170,12 +159,12 @@ const App = (function() {
     }
   }
 
-  // Handle logout
   function handleLogout() {
     if (eventSource) {
       eventSource.close();
       eventSource = null;
     }
+    clearTimeout(sseHeartbeatTimeout);
     API.logout();
     currentUser = null;
     privateKey = null;
@@ -185,11 +174,9 @@ const App = (function() {
     showAuthView();
   }
 
-  // Load user session
   async function loadUserSession(user) {
     currentUser = user;
 
-    // Load private key
     const storedKey = await CryptoModule.getStoredPrivateKey(user.id);
     if (!storedKey) {
       showToast('Encryption keys not found. Please login again.', 'error');
@@ -202,7 +189,6 @@ const App = (function() {
     showChatView();
   }
 
-  // Show auth view
   function showAuthView() {
     elements.authView.classList.remove('hidden');
     elements.chatView.classList.add('hidden');
@@ -212,23 +198,17 @@ const App = (function() {
     elements.registerError.textContent = '';
   }
 
-  // Show chat view
   async function showChatView() {
     elements.authView.classList.add('hidden');
     elements.chatView.classList.remove('hidden');
 
-    // Set user info
     elements.currentUsername.textContent = currentUser.username;
     elements.currentUserAvatar.textContent = currentUser.username.charAt(0);
 
-    // Load conversations
     await loadConversations();
-
-    // Connect to SSE
     connectSSE();
   }
 
-  // Load conversations
   async function loadConversations() {
     try {
       const { conversations: convs } = await API.getConversations();
@@ -239,7 +219,6 @@ const App = (function() {
     }
   }
 
-  // Render conversations list
   function renderConversations() {
     if (conversations.length === 0) {
       elements.conversationsList.innerHTML = `
@@ -270,7 +249,6 @@ const App = (function() {
       `;
     }).join('');
 
-    // Add click listeners
     elements.conversationsList.querySelectorAll('.conversation-item').forEach(item => {
       item.addEventListener('click', () => {
         const convId = item.dataset.id;
@@ -280,7 +258,6 @@ const App = (function() {
     });
   }
 
-  // Handle user search
   function handleUserSearch(e) {
     const query = e.target.value.trim();
 
@@ -301,7 +278,6 @@ const App = (function() {
     }, 300);
   }
 
-  // Render search results
   function renderSearchResults(users) {
     if (users.length === 0) {
       elements.searchResults.innerHTML = '<div class="search-no-results">No users found</div>';
@@ -313,7 +289,6 @@ const App = (function() {
         </div>
       `).join('');
 
-      // Add click listeners
       elements.searchResults.querySelectorAll('.search-result-item').forEach(item => {
         item.addEventListener('click', () => {
           startConversation(item.dataset.userId);
@@ -326,7 +301,6 @@ const App = (function() {
     elements.searchResults.classList.remove('hidden');
   }
 
-  // Start conversation with user
   async function startConversation(userId) {
     try {
       const { conversation } = await API.createConversation(userId);
@@ -341,41 +315,32 @@ const App = (function() {
     }
   }
 
-  // Open conversation
   async function openConversation(conversationId, userId) {
     try {
-      // Get user info
       const { user } = await API.getUser(userId);
       currentChatUser = user;
       currentConversation = conversations.find(c => c.id === conversationId) || { id: conversationId };
 
-      // Update UI
       elements.chatUsername.textContent = user.username;
       elements.chatUserAvatar.textContent = user.username.charAt(0);
 
-      // Show chat container
       showNoChatSelected(false);
       elements.chatContainer.classList.remove('hidden');
 
-      // Hide sidebar on mobile
       elements.sidebar.classList.add('hidden-mobile');
 
-      // Mark conversation as active
       elements.conversationsList.querySelectorAll('.conversation-item').forEach(item => {
         item.classList.toggle('active', item.dataset.id === conversationId);
       });
 
-      // Load messages
       await loadMessages(conversationId);
 
-      // Focus input
       elements.messageInput.focus();
     } catch (e) {
       showToast('Failed to open conversation', 'error');
     }
   }
 
-  // Load messages
   async function loadMessages(conversationId) {
     try {
       const { messages } = await API.getMessages(conversationId);
@@ -385,7 +350,6 @@ const App = (function() {
     }
   }
 
-  // Render messages (FIXED: sent messages use local cache)
   async function renderMessages(messages) {
     if (messages.length === 0) {
       elements.messagesList.innerHTML = `
@@ -401,7 +365,6 @@ const App = (function() {
       let content = 'Unable to decrypt';
 
       if (isSent) {
-        // Retrieve locally stored plaintext (you wrote the message)
         try {
           const cached = await CryptoModule.getSentPlaintext(msg.id);
           content = cached || 'You sent an encrypted message';
@@ -409,7 +372,6 @@ const App = (function() {
           content = 'You sent an encrypted message';
         }
       } else {
-        // Received message – decrypt with your own private key
         try {
           content = await CryptoModule.decryptWithPrivateKey(
             msg.encrypted_content,
@@ -418,7 +380,7 @@ const App = (function() {
             privateKey
           );
         } catch (e) {
-          console.error('Decrypt error (received):', e);
+          console.error('Decrypt error:', e);
           content = 'Unable to decrypt';
         }
       }
@@ -435,7 +397,6 @@ const App = (function() {
     scrollToBottom();
   }
 
-  // Handle send message (FIXED: stores sent message plaintext locally)
   async function handleSendMessage(e) {
     e.preventDefault();
 
@@ -445,13 +406,11 @@ const App = (function() {
     elements.messageInput.value = '';
 
     try {
-      // Encrypt ONLY for recipient's public key
       const encryptedForRecipient = await CryptoModule.encryptForRecipient(
         message,
         currentChatUser.public_key
       );
 
-      // Send to server – IMPORTANT: API.sendMessage must return the created message object
       const { message: sentMessage } = await API.sendMessage(
         currentConversation.id,
         encryptedForRecipient.encryptedContent,
@@ -459,10 +418,8 @@ const App = (function() {
         encryptedForRecipient.iv
       );
 
-      // Cache the plaintext locally so we can display it later without decryption
       await CryptoModule.storeSentPlaintext(sentMessage.id, message);
 
-      // Add message to UI immediately (we already know the plaintext)
       const messageHtml = `
         <div class="message sent">
           <div class="message-content">${escapeHtml(message)}</div>
@@ -470,7 +427,6 @@ const App = (function() {
         </div>
       `;
 
-      // Remove empty state if present
       const emptyState = elements.messagesList.querySelector('.message-encrypted');
       if (emptyState && emptyState.textContent.includes('end-to-end encrypted')) {
         emptyState.remove();
@@ -480,81 +436,66 @@ const App = (function() {
       scrollToBottom();
     } catch (e) {
       showToast('Failed to send message', 'error');
-      elements.messageInput.value = message; // restore input on failure
+      elements.messageInput.value = message;
     }
   }
 
-  // Connect to SSE for real-time updates
-  // Connect to SSE for real-time updates
-function connectSSE() {
-  if (eventSource) {
-    eventSource.close();
+  function resetHeartbeat() {
+    clearTimeout(sseHeartbeatTimeout);
+    sseHeartbeatTimeout = setTimeout(() => {
+      connectSSE();
+    }, SSE_HEARTBEAT_INTERVAL);
   }
 
-  const token = API.getToken();
-  if (!token) {
-    console.error('No token available for SSE connection');
-    return;
-  }
+  function connectSSE() {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+    clearTimeout(sseHeartbeatTimeout);
 
-  console.log('🔌 Connecting SSE with token:', token.substring(0, 20) + '...');
-  eventSource = new EventSource(`/api/events?token=${token}`);
+    const token = API.getToken();
+    if (!token) return;
 
-  eventSource.onopen = () => {
-    console.log('SSE connection opened successfully');
-  };
+    eventSource = new EventSource(`/api/events?token=${token}`);
 
-  eventSource.onmessage = async (event) => {
-    console.log('📩 SSE raw event received:', event.data);
-    try {
-      const data = JSON.parse(event.data);
-      console.log('📦 Parsed SSE data:', data);
-      
-      if (data.type === 'new_message') {
-        console.log('New message event detected:', {
-          messageId: data.message?.id,
-          conversationId: data.message?.conversation_id,
-          senderId: data.message?.sender_id,
-          currentUserId: currentUser?.id
-        });
-        await handleNewMessage(data.message);
-      } else {
-        console.log('ℹ️ Unknown SSE event type:', data.type);
+    eventSource.onopen = () => {
+      resetHeartbeat();
+    };
+
+    eventSource.addEventListener('message', async (event) => {
+      try {
+        if (event.data.startsWith(':')) {
+          resetHeartbeat();
+          return;
+        }
+
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'new_message') {
+          await handleNewMessage(data.message);
+        }
+      } catch (e) {
+        console.error('SSE error:', e);
       }
-    } catch (e) {
-      console.error('SSE parsing error:', e);
-    }
-  };
-
-  eventSource.onerror = (err) => {
-    console.error('SSE error occurred:', {
-      readyState: eventSource.readyState,
-      message: err.message || 'Unknown error'
     });
-    
-    // Log readyState meaning
-    const states = ['CONNECTING', 'OPEN', 'CLOSED'];
-    console.log(`SSE state: ${states[eventSource.readyState] || 'UNKNOWN'}`);
-    
-    // Reconnect after a delay
-    setTimeout(() => {
-      if (API.isLoggedIn()) {
-        console.log('Attempting SSE reconnection...');
-        connectSSE();
-      }
-    }, 5000);
-  };
-}
 
-  // Handle new message from SSE
+    eventSource.onerror = () => {
+      clearTimeout(sseHeartbeatTimeout);
+      setTimeout(() => {
+        if (API.isLoggedIn()) {
+          connectSSE();
+        }
+      }, 5000);
+    };
+
+    resetHeartbeat();
+  }
+
   async function handleNewMessage(message) {
-    // Update conversation list
-    await loadConversations();
+    loadConversations();
 
-    // If currently viewing this conversation, add the message
     if (currentConversation && currentConversation.id === message.conversation_id) {
-      // Only received messages arrive via SSE; sent ones are handled locally.
-      // But just in case, we check who the sender is.
       const isSent = message.sender_id === currentUser.id;
       let content = 'Unable to decrypt';
 
@@ -570,7 +511,7 @@ function connectSSE() {
             privateKey
           );
         } catch (e) {
-          console.error('Decrypt error (SSE):', e);
+          console.error('Decrypt error:', e);
           content = 'Unable to decrypt';
         }
       }
@@ -587,19 +528,16 @@ function connectSSE() {
     }
   }
 
-  // Show/hide no chat selected
   function showNoChatSelected(show = true) {
     elements.noChatSelected.classList.toggle('hidden', !show);
     elements.chatContainer.classList.toggle('hidden', show);
   }
 
-  // Scroll messages to bottom
   function scrollToBottom() {
     const container = document.getElementById('messages-container');
-    container.scrollTop = container.scrollHeight;
+    if (container) container.scrollTop = container.scrollHeight;
   }
 
-  // Show toast notification
   function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -611,7 +549,6 @@ function connectSSE() {
     }, 3000);
   }
 
-  // Format time
   function formatTime(dateString) {
     const date = new Date(dateString);
     const now = new Date();
@@ -623,17 +560,14 @@ function connectSSE() {
     return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
-  // Escape HTML
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
   }
 
-  // Initialize on DOM ready
   document.addEventListener('DOMContentLoaded', init);
 
-  // Public API
   return {
     init
   };
