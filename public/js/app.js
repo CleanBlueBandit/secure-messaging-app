@@ -423,7 +423,7 @@ const App = (function() {
     scrollToBottom();
   }
 
-  // Handle send message
+  // Handle send message - FIXED VERSION
   async function handleSendMessage(e) {
     e.preventDefault();
     
@@ -433,27 +433,21 @@ const App = (function() {
     elements.messageInput.value = '';
 
     try {
-      // Encrypt for recipient
-      const recipientEncrypted = await CryptoModule.encryptForRecipient(
+      // Encrypt ONLY for recipient's public key
+      const encryptedForRecipient = await CryptoModule.encryptForRecipient(
         message,
         currentChatUser.public_key
       );
 
-      // Also encrypt for self (so we can read our own messages)
-      const selfEncrypted = await CryptoModule.encryptForRecipient(
-        message,
-        currentUser.public_key
-      );
-
-      // Send to server (we send the self-encrypted version so we can decrypt it later)
+      // Send to server
       await API.sendMessage(
         currentConversation.id,
-        selfEncrypted.encryptedContent,
-        selfEncrypted.encryptedKey,
-        selfEncrypted.iv
+        encryptedForRecipient.encryptedContent,
+        encryptedForRecipient.encryptedKey,
+        encryptedForRecipient.iv
       );
 
-      // Add message to UI immediately
+      // Add message to UI immediately (you can show unencrypted since you know what you sent)
       const messageHtml = `
         <div class="message sent">
           <div class="message-content">${escapeHtml(message)}</div>
